@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ./certs:/etc/nginx/certs:rw
+      - /etc/nginx/vhost.d:/etc/nginx/vhost.d:rw
+      - /usr/share/nginx/html:/usr/share/nginx/html:rw
+    networks:
+      - nginx-network
+
+  acme-companion:
+    image: nginxproxy/acme-companion
+    container_name: nginx-proxy-acme
+    restart: always
+    environment:
+      # tells the companion which proxy to talk to
+      NGINX_PROXY_CONTAINER: nginx-proxy
+      # your email for Let’s Encrypt notices
+      DEFAULT_EMAIL: drogomk01@gmail.com
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./certs:/etc/nginx/certs:rw
+      - /etc/nginx/vhost.d:/etc/nginx/vhost.d:rw
+      - /usr/share/nginx/html:/usr/share/nginx/html:rw
+    depends_on:
+      - nginx-proxy
+    networks:
+      - nginx-network
+
+  backend:
+    build:
+      context: .
+    container_name: backend
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - VIRTUAL_HOST=alaayoussef.shop
+      - LETSENCRYPT_HOST=alaayoussef.shop
+      - LETSENCRYPT_EMAIL=drogomk01@gmail.com
+      # if your app listens on a port other than 80, let nginx-proxy know:
+      - VIRTUAL_PORT=5000
+    expose:
+      - "5000"
+    networks:
+      - nginx-network
+
+networks:
+  nginx-network:
+    external: true
+

@@ -1,0 +1,18 @@
+const mongoose = require("mongoose");
+
+const IssuedCertificateSchema = new mongoose.Schema(
+  {
+    templateId: { type: mongoose.Schema.Types.ObjectId, ref: "Template", required: true },
+    traineeData: { type: Object, required: true },
+    pdfUrl: { type: String, required: true },
+    filePath: { type: String, required: true },
+    certificateNumber: { type: String, required: true, unique: true },
+    verificationUrl: { type: String, required: true },
+    issuedAt: { type: Date, default: Date.now },
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model("IssuedCertificate", IssuedCertificateSchema);
+
+

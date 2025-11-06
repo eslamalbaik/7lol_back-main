@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>اختيار إحداثيات الشهادة</title>
+  <style>
+    body { font-family: sans-serif; margin: 16px; background: #f7f7f7; }
+    .container { max-width: 1000px; margin: 0 auto; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .panel { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+    #canvas { width: 100%; height: auto; border: 1px dashed #999; background: #fff; cursor: crosshair; }
+    .row { display: flex; gap: 12px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+    input[type="text"] { padding: 6px 8px; }
+    code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; }
+  </style>
+  <!-- PDF.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.6.82/pdf.min.js"></script>
+  <script>
+    // Configure worker for PDF.js CDN
+    if (window['pdfjsLib']) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.6.82/pdf.worker.min.js';
+    }
+  </script>
+</head>
+<body>
+  <div class="container">
+    <h2>أداة اختيار الإحداثيات للقالب</h2>
+    <div class="panel">
+      <div class="toolbar">
+        <label>مسار القالب:</label>
+        <input id="templatePath" type="text" size="60" value="/server/templates/certificate-template.pdf" />
+        <label>مقياس العرض:</label>
+        <input id="scaleInput" type="number" step="0.1" min="0.1" value="1.4" />
+        <button id="loadBtn">تحميل</button>
+      </div>
+      <div class="toolbar">
+        <label>أو اختر ملف PDF محلي:</label>
+        <input id="fileInput" type="file" accept="application/pdf" />
+      </div>
+      <canvas id="canvas"></canvas>
+      <div class="row">
+        <div>آخر نقرة (PDF units): x: <code id="xOut">-</code>, y: <code id="yOut">-</code></div>
+        <button id="copyBtn">نسخ الإحداثيات</button>
+      </div>
+      <div class="row">
+        <div>مقتطف للاستخدام مع pdf-lib:</div>
+        <code id="snippet">drawText("النص", X, Y, SIZE);</code>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const xOut = document.getElementById('xOut');
+    const yOut = document.getElementById('yOut');
+    const snippet = document.getElementById('snippet');
+    const loadBtn = document.getElementById('loadBtn');
+    const pathInput = document.getElementById('templatePath');
+    const scaleInput = document.getElementById('scaleInput');
+    const copyBtn = document.getElementById('copyBtn');
+
+    let pdfPage = null;
+    let viewport = null;
+    let scale = Number(scaleInput.value) || 1.4;
+
+    async function renderPage() {
+      viewport = pdfPage.getViewport({ scale });
+      canvas.width = viewport.width; canvas.height = viewport.height;
+      const renderContext = { canvasContext: ctx, viewport };
+      await pdfPage.render(renderContext).promise;
+    }
+
+    async function loadPdf() {
+      const url = pathInput.value.trim();
+      const loadingTask = pdfjsLib.getDocument(url);
+      const pdf = await loadingTask.promise;
+      pdfPage = await pdf.getPage(1);
+      await renderPage();
+    }
+
+    function canvasToPdfCoords(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const xCanvas = clientX - rect.left;
+      const yCanvas = clientY - rect.top;
+      const xPdf = xCanvas / scale;
+      const yPdf = (canvas.height - yCanvas) / scale; // invert Y for PDF coordinate system
+      return { xPdf, yPdf };
+    }
+
+    canvas.addEventListener('click', (e) => {
+      if (!viewport) return;
+      const { xPdf, yPdf } = canvasToPdfCoords(e.clientX, e.clientY);
+      const x = Number(xPdf.toFixed(2));
+      const y = Number(yPdf.toFixed(2));
+      xOut.textContent = x; yOut.textContent = y;
+      snippet.textContent = `drawText("النص", ${x}, ${y}, 18);`;
+    });
+
+    loadBtn.addEventListener('click', async () => {
+      scale = Number(scaleInput.value) || 1.4;
+      await loadPdf();
+    });
+
+    document.getElementById('fileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const arrayBuffer = await file.arrayBuffer();
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+      const pdf = await loadingTask.promise;
+      pdfPage = await pdf.getPage(1);
+      scale = Number(scaleInput.value) || 1.4;
+      await renderPage();
+    });
+
+    copyBtn.addEventListener('click', async () => {
+      const text = snippet.textContent;
+      try { await navigator.clipboard.writeText(text); copyBtn.textContent = 'تم النسخ'; setTimeout(()=> copyBtn.textContent='نسخ الإحداثيات', 1200);} catch {}
+    });
+
+    // Load initial
+    loadPdf();
+  </script>
+</body>
+</html>
+
+
