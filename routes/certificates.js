@@ -84,7 +84,11 @@ router.post(
   async (req, res) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ message: "خطأ في التحقق من البيانات", errors: errors.array() });
+      if (!errors.isEmpty())
+        return res.status(400).json({
+          message: "خطأ في التحقق من البيانات",
+          errors: errors.array(),
+        });
 
       const { traineeName, courseName, trainerName } = req.body;
       const certificateNumberInput = req.body.certificateNumber;
@@ -95,42 +99,108 @@ router.post(
         process.env.CERT_TEMPLATE_PATH,
         fixedTemplate.templatePath,
       ].filter(Boolean);
+
       const templatePath = templateCandidates.find((p) => fs.existsSync(p));
-      if (!templatePath) {
-        return res.status(500).json({ message: "لم يتم العثور على قالب الشهادة", tried: templateCandidates });
-      }
+      if (!templatePath)
+        return res.status(500).json({
+          message: "لم يتم العثور على قالب الشهادة",
+          tried: templateCandidates,
+        });
+
       const templateBytes = fs.readFileSync(templatePath);
       const pdfDoc = await PDFDocument.load(templateBytes);
       pdfDoc.registerFontkit(fontkit);
+
       const page = pdfDoc.getPages()[0];
 
-      // Font
+      // Load Arabic font
       const fontPath = fixedTemplate.fontPath;
-      if (!fs.existsSync(fontPath)) {
-        return res.status(500).json({ message: "لم يتم العثور على الخط العربي. يرجى ضبط ARABIC_FONT_PATH أو وضع TraditionalArabic.ttf" });
-      }
+      if (!fs.existsSync(fontPath))
+        return res.status(500).json({
+          message:
+            "لم يتم العثور على الخط العربي. يرجى ضبط ARABIC_FONT_PATH أو وضع TraditionalArabic.ttf",
+        });
+
       const fontBytes = fs.readFileSync(fontPath);
       const arabicFont = await pdfDoc.embedFont(fontBytes);
 
+      // Convert hex (#2424bc) → RGB
+      const hexToRgb = (hex) => {
+        const bigint = parseInt(hex.replace("#", ""), 16);
+        return rgb(
+          ((bigint >> 16) & 255) / 255,
+          ((bigint >> 8) & 255) / 255,
+          (bigint & 255) / 255
+        );
+      };
+
+      // Fixed color: #2424bc
+      const blueColor = hexToRgb("#2424bc");
+
+      // Draw text (Right-to-Left Arabic support)
       const drawRtL = (text, x, y, size, align) => {
         const shaped = shapeArabic(text);
         const textWidth = arabicFont.widthOfTextAtSize(shaped, size);
         let drawX = x;
         if (align === "right") drawX = x - textWidth;
         if (align === "center") drawX = x - textWidth / 2;
-        page.drawText(shaped, { x: drawX, y, size, font: arabicFont, color: rgb(0, 0, 0) });
+        page.drawText(shaped, {
+          x: drawX,
+          y,
+          size,
+          font: arabicFont,
+          color: blueColor,
+        });
       };
 
       const { coords } = fixedTemplate;
-      drawRtL(String(traineeName), coords.traineeName.x, coords.traineeName.y, coords.traineeName.size, coords.traineeName.align);
-      drawRtL(String(courseName), coords.courseName.x, coords.courseName.y, coords.courseName.size, coords.courseName.align);
-      drawRtL(String(trainerName), coords.trainerName.x, coords.trainerName.y, coords.trainerName.size, coords.trainerName.align);
 
-      const generatedNumber = (certificateNumberInput && String(certificateNumberInput)) || customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 12)();
-      const formattedDate = issueDateInput || new Date().toLocaleDateString("ar-EG");
-      drawRtL(generatedNumber, coords.certificateNumber.x, coords.certificateNumber.y, coords.certificateNumber.size, coords.certificateNumber.align);
-      drawRtL(formattedDate, coords.issueDate.x, coords.issueDate.y, coords.issueDate.size, coords.issueDate.align);
+      // Draw all text in #2424bc
+      drawRtL(
+        String(traineeName),
+        coords.traineeName.x,
+        coords.traineeName.y,
+        coords.traineeName.size,
+        coords.traineeName.align
+      );
+      drawRtL(
+        String(courseName),
+        coords.courseName.x,
+        coords.courseName.y,
+        coords.courseName.size,
+        coords.courseName.align
+      );
+      drawRtL(
+        String(trainerName),
+        coords.trainerName.x,
+        coords.trainerName.y,
+        coords.trainerName.size,
+        coords.trainerName.align
+      );
 
+      const generatedNumber =
+        certificateNumberInput ||
+        customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 12)();
+const formattedDate =
+  issueDateInput || new Date().toLocaleDateString("en-GB");
+
+
+      drawRtL(
+        generatedNumber,
+        coords.certificateNumber.x,
+        coords.certificateNumber.y,
+        coords.certificateNumber.size,
+        coords.certificateNumber.align
+      );
+      drawRtL(
+        formattedDate,
+        coords.issueDate.x,
+        coords.issueDate.y,
+        coords.issueDate.size,
+        coords.issueDate.align
+      );
+
+      // Save PDF
       const pdfBytes = await pdfDoc.save();
       const publicDir = path.join(__dirname, "..", "public");
       const certsDir = path.join(publicDir, "certificates");
@@ -140,11 +210,12 @@ router.post(
       const fileName = `${generatedNumber}.pdf`;
       const filePath = path.join(certsDir, fileName);
       fs.writeFileSync(filePath, pdfBytes);
+
       const baseUrl = `${req.protocol}://${req.get("host")}`;
       const pdfUrl = `${baseUrl}/certificates/${fileName}`;
       const verificationUrl = `https://desn.pro/verify?certificate=${generatedNumber}`;
 
-      // Persist certificate so it appears in GET /api/certificates
+      // Save record in DB
       await Certificate.create({
         studentName: traineeName,
         courseName,
@@ -163,7 +234,9 @@ router.post(
       });
     } catch (err) {
       console.error("Generate fixed template error:", err);
-      return res.status(500).json({ message: "خطأ في الخادم", error: err.message });
+      return res
+        .status(500)
+        .json({ message: "خطأ في الخادم", error: err.message });
     }
   }
 );

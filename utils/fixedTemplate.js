@@ -6,11 +6,11 @@ module.exports = {
   templatePath: path.join(__dirname, "..", "server", "templates", "certificate-template.pdf"),
   fontPath: process.env.ARABIC_FONT_PATH || path.join(__dirname, "..", "server", "fonts", "TraditionalArabic.ttf"),
   coords: {
-    traineeName: { x: 420, y: 420, size: 22, align: "center" },
-    courseName: { x: 420, y: 380, size: 18, align: "center" },
-    trainerName: { x: 420, y: 340, size: 18, align: "center" },
-    certificateNumber: { x: 160, y: 120, size: 12, align: "left" },
-    issueDate: { x: 680, y: 120, size: 12, align: "right" },
+    traineeName: { x: 1000, y: 840, size: 43, align: "center", },
+    courseName: { x: 1000, y: 670, size: 39, align: "center" },
+    trainerName: { x: 1020, y: 360, size: 30, align: "center" },
+    certificateNumber: { x: 1030, y: 180, size: 30, align: "center" },
+    issueDate: { x: 1610, y: 183, size: 30, align: "center" },
   },
 };
 
