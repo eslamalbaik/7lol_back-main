@@ -2,20 +2,21 @@ const express = require("express");
 const router = express.Router();
 const Certificate = require("../models/Certificate");
 const multer = require("multer");
-const uploadBuffer = require("../utils/cloudinaryUpload");
 const auth = require("../middlewares/auth");
-const cloudinary = require("../config/cloudinary");
 const fs = require("fs");
 const path = require("path");
 const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
 const fontkit = require("@pdf-lib/fontkit");
 const { customAlphabet } = require("nanoid");
-const Template = require("../models/Template");
-const CertificateField = require("../models/CertificateField");
-const IssuedCertificate = require("../models/IssuedCertificate");
 const { shapeArabic } = require("../utils/arabicText");
 const fixedTemplate = require("../utils/fixedTemplate");
 const { validationResult, body } = require("express-validator");
+const {
+  uploadToS3,
+  deleteFromS3,
+  isS3Configured,
+  getPresignedUrl,
+} = require("../utils/s3Upload");
 // Make pdfjs optional for environments where it isn't available
 let pdfjsLib = null;
 try {
@@ -26,6 +27,79 @@ try {
 }
 // Configure multer for in-memory storage
 const upload = multer({ storage: multer.memoryStorage() });
+const PRESIGNED_URL_TTL = Number(process.env.S3_URL_EXPIRES_IN || 600);
+
+async function getDownloadUrlForCert(cert) {
+  if (!cert) return null;
+  if (isS3Configured() && cert.s3Key) {
+    try {
+      return await getPresignedUrl(cert.s3Key, PRESIGNED_URL_TTL);
+    } catch (err) {
+      console.error("Failed to generate presigned URL:", err);
+    }
+  }
+  return cert.pdfUrl || cert.certificateUrl;
+}
+
+async function serializeCertificate(cert) {
+  if (!cert) return null;
+  const data =
+    typeof cert.toObject === "function" ? cert.toObject() : { ...cert };
+  data.pdfUrl = await getDownloadUrlForCert(cert);
+  return data;
+}
+
+async function serializeCertificates(list) {
+  return Promise.all(list.map((cert) => serializeCertificate(cert)));
+}
+
+const LOCAL_CERTS_DIR = path.join(__dirname, "..", "public", "certificates");
+
+function ensureLocalDir(targetPath = LOCAL_CERTS_DIR) {
+  fs.mkdirSync(targetPath, { recursive: true });
+}
+
+function buildLocalUrl(req, fileName) {
+  return `${req.protocol}://${req.get("host")}/certificates/${fileName}`;
+}
+
+function resolveLocalPathFromUrl(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    const relative = parsed.pathname.replace(/^\/+/, "");
+    if (!relative.startsWith("certificates/")) return null;
+    return path.join(__dirname, "..", "public", relative);
+  } catch {
+    const relative = url.replace(/^\/+/, "");
+    if (!relative.startsWith("certificates/")) return null;
+    return path.join(__dirname, "..", "public", relative);
+  }
+}
+
+async function removeCertificateAssets(cert) {
+  if (!cert) return;
+
+  if (isS3Configured() && cert.s3Key) {
+    try {
+      await deleteFromS3(cert.s3Key);
+    } catch (err) {
+      console.error("Failed to delete from S3:", err);
+    }
+  }
+
+  const urls = new Set([cert.pdfUrl, cert.certificateUrl].filter(Boolean));
+
+  for (const url of urls) {
+    const localPath = resolveLocalPathFromUrl(url);
+    if (!localPath) continue;
+    try {
+      if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
+    } catch (err) {
+      console.error("Failed to delete local file:", err);
+    }
+  }
+}
 
 router.get("/", async (req, res) => {
   try {
@@ -49,8 +123,10 @@ router.get("/", async (req, res) => {
     const totalPages = Math.ceil(total / limit);
 
     // Return response with pagination metadata
+    const data = await serializeCertificates(certs);
+
     res.json({
-      data: certs,
+      data,
       pagination: {
         total,
         totalPages,
@@ -84,7 +160,11 @@ router.post(
   async (req, res) => {
     try {
       const errors = validationResult(req);
-      if (!errors.isEmpty()) return res.status(400).json({ message: "خطأ في التحقق من البيانات", errors: errors.array() });
+      if (!errors.isEmpty())
+        return res.status(400).json({
+          message: "خطأ في التحقق من البيانات",
+          errors: errors.array(),
+        });
 
       const { traineeName, courseName, trainerName } = req.body;
       const certificateNumberInput = req.body.certificateNumber;
@@ -95,75 +175,151 @@ router.post(
         process.env.CERT_TEMPLATE_PATH,
         fixedTemplate.templatePath,
       ].filter(Boolean);
+
       const templatePath = templateCandidates.find((p) => fs.existsSync(p));
-      if (!templatePath) {
-        return res.status(500).json({ message: "لم يتم العثور على قالب الشهادة", tried: templateCandidates });
-      }
+      if (!templatePath)
+        return res.status(500).json({
+          message: "لم يتم العثور على قالب الشهادة",
+          tried: templateCandidates,
+        });
+
       const templateBytes = fs.readFileSync(templatePath);
       const pdfDoc = await PDFDocument.load(templateBytes);
       pdfDoc.registerFontkit(fontkit);
+
       const page = pdfDoc.getPages()[0];
 
-      // Font
+      // Load Arabic font
       const fontPath = fixedTemplate.fontPath;
-      if (!fs.existsSync(fontPath)) {
-        return res.status(500).json({ message: "لم يتم العثور على الخط العربي. يرجى ضبط ARABIC_FONT_PATH أو وضع TraditionalArabic.ttf" });
-      }
+      if (!fs.existsSync(fontPath))
+        return res.status(500).json({
+          message:
+            "لم يتم العثور على الخط العربي. يرجى ضبط ARABIC_FONT_PATH أو وضع TraditionalArabic.ttf",
+        });
+
       const fontBytes = fs.readFileSync(fontPath);
       const arabicFont = await pdfDoc.embedFont(fontBytes);
 
+      // Convert hex (#2424bc) → RGB
+      const hexToRgb = (hex) => {
+        const bigint = parseInt(hex.replace("#", ""), 16);
+        return rgb(
+          ((bigint >> 16) & 255) / 255,
+          ((bigint >> 8) & 255) / 255,
+          (bigint & 255) / 255
+        );
+      };
+
+      // Fixed color: #2424bc
+      const blueColor = hexToRgb("#2424bc");
+
+      // Draw text (Right-to-Left Arabic support)
       const drawRtL = (text, x, y, size, align) => {
         const shaped = shapeArabic(text);
         const textWidth = arabicFont.widthOfTextAtSize(shaped, size);
         let drawX = x;
         if (align === "right") drawX = x - textWidth;
         if (align === "center") drawX = x - textWidth / 2;
-        page.drawText(shaped, { x: drawX, y, size, font: arabicFont, color: rgb(0, 0, 0) });
+        page.drawText(shaped, {
+          x: drawX,
+          y,
+          size,
+          font: arabicFont,
+          color: blueColor,
+        });
       };
 
       const { coords } = fixedTemplate;
-      drawRtL(String(traineeName), coords.traineeName.x, coords.traineeName.y, coords.traineeName.size, coords.traineeName.align);
-      drawRtL(String(courseName), coords.courseName.x, coords.courseName.y, coords.courseName.size, coords.courseName.align);
-      drawRtL(String(trainerName), coords.trainerName.x, coords.trainerName.y, coords.trainerName.size, coords.trainerName.align);
 
-      const generatedNumber = (certificateNumberInput && String(certificateNumberInput)) || customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 12)();
-      const formattedDate = issueDateInput || new Date().toLocaleDateString("ar-EG");
-      drawRtL(generatedNumber, coords.certificateNumber.x, coords.certificateNumber.y, coords.certificateNumber.size, coords.certificateNumber.align);
-      drawRtL(formattedDate, coords.issueDate.x, coords.issueDate.y, coords.issueDate.size, coords.issueDate.align);
+      // Draw all text in #2424bc
+      drawRtL(
+        String(traineeName),
+        coords.traineeName.x,
+        coords.traineeName.y,
+        coords.traineeName.size,
+        coords.traineeName.align
+      );
+      drawRtL(
+        String(courseName),
+        coords.courseName.x,
+        coords.courseName.y,
+        coords.courseName.size,
+        coords.courseName.align
+      );
+      drawRtL(
+        String(trainerName),
+        coords.trainerName.x,
+        coords.trainerName.y,
+        coords.trainerName.size,
+        coords.trainerName.align
+      );
+
+      const generatedNumber =
+        certificateNumberInput ||
+        customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 12)();
+      const formattedDate =
+        issueDateInput || new Date().toLocaleDateString("en-GB");
+      drawRtL(
+        generatedNumber,
+        coords.certificateNumber.x,
+        coords.certificateNumber.y,
+        coords.certificateNumber.size,
+        coords.certificateNumber.align
+      );
+      drawRtL(
+        formattedDate,
+        coords.issueDate.x,
+        coords.issueDate.y,
+        coords.issueDate.size,
+        coords.issueDate.align
+      );
 
       const pdfBytes = await pdfDoc.save();
-      const publicDir = path.join(__dirname, "..", "public");
-      const certsDir = path.join(publicDir, "certificates");
-      if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir);
-      if (!fs.existsSync(certsDir)) fs.mkdirSync(certsDir);
-
+      const buffer = Buffer.from(pdfBytes);
       const fileName = `${generatedNumber}.pdf`;
-      const filePath = path.join(certsDir, fileName);
-      fs.writeFileSync(filePath, pdfBytes);
-      const baseUrl = `${req.protocol}://${req.get("host")}`;
-      const pdfUrl = `${baseUrl}/certificates/${fileName}`;
+      const key = `certificates/${fileName}`;
+
+      let pdfUrl;
+      let s3Key = null;
+      if (isS3Configured()) {
+        const result = await uploadToS3(buffer, key, "application/pdf");
+        pdfUrl = result.url;
+        s3Key = result.key;
+      } else {
+        const filePath = path.join(LOCAL_CERTS_DIR, fileName);
+        ensureLocalDir(path.dirname(filePath));
+        fs.writeFileSync(filePath, buffer);
+        pdfUrl = buildLocalUrl(req, fileName);
+      }
+
       const verificationUrl = `https://desn.pro/verify?certificate=${generatedNumber}`;
 
-      // Persist certificate so it appears in GET /api/certificates
-      await Certificate.create({
+      // Save record in DB
+      const savedCert = await Certificate.create({
         studentName: traineeName,
         courseName,
         trainerName,
         certificateNumber: generatedNumber,
         pdfUrl,
+        s3Key,
+        certificateUrl: pdfUrl,
         verificationUrl,
       });
 
+      const downloadUrl = await getDownloadUrlForCert(savedCert);
+
       return res.status(201).json({
         message: "تم إنشاء الشهادة بنجاح",
-        pdfUrl,
+        pdfUrl: downloadUrl,
         certificateNumber: generatedNumber,
         issueDate: formattedDate,
         verificationUrl,
       });
     } catch (err) {
       console.error("Generate fixed template error:", err);
-      return res.status(500).json({ message: "خطأ في الخادم", error: err.message });
+      return res
+        .status(500)
+        .json({ message: "خطأ في الخادم", error: err.message });
     }
   }
 );
@@ -194,12 +350,6 @@ router.post("/generate", auth, async (req, res) => {
         .status(400)
         .json({ message: "studentName, courseName, trainerName are required" });
     }
-
-    // Prepare directories
-    const publicDir = path.join(__dirname, "..", "public");
-    const certsDir = path.join(publicDir, "certificates");
-    if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir);
-    if (!fs.existsSync(certsDir)) fs.mkdirSync(certsDir);
 
     // Load template (support multiple default locations)
     const candidates = [
@@ -238,7 +388,7 @@ router.post("/generate", auth, async (req, res) => {
     };
 
     // Example placements
-    drawText(studentName, 200, height - 4260, 22);
+    drawText(studentName, 200, height - 260, 22);
     drawText(courseName, 200, height - 300, 18);
     drawText(trainerName, 200, height - 340, 18);
     drawText(new Date().toLocaleDateString("en-GB"), 200, height - 380, 14);
@@ -246,12 +396,22 @@ router.post("/generate", auth, async (req, res) => {
     drawText(verificationUrl, 200, height - 460, 12);
 
     const pdfBytes = await pdfDoc.save();
+    const buffer = Buffer.from(pdfBytes);
     const fileName = `${certificateNumber}.pdf`;
-    const filePath = path.join(certsDir, fileName);
-    fs.writeFileSync(filePath, pdfBytes);
+    const key = `certificates/${fileName}`;
 
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
-    const pdfUrl = `${baseUrl}/certificates/${fileName}`;
+    let pdfUrl;
+    let s3Key = null;
+    if (isS3Configured()) {
+      const result = await uploadToS3(buffer, key, "application/pdf");
+      pdfUrl = result.url;
+      s3Key = result.key;
+    } else {
+      const filePath = path.join(LOCAL_CERTS_DIR, fileName);
+      ensureLocalDir(path.dirname(filePath));
+      fs.writeFileSync(filePath, buffer);
+      pdfUrl = buildLocalUrl(req, fileName);
+    }
 
     const record = await Certificate.create({
       studentName,
@@ -259,13 +419,17 @@ router.post("/generate", auth, async (req, res) => {
       trainerName,
       certificateNumber,
       pdfUrl,
+      s3Key,
+      certificateUrl: pdfUrl,
       verificationUrl,
     });
 
+    const serialized = await serializeCertificate(record);
+
     return res.status(201).json({
       message: "Certificate generated",
-      certificate: record,
-      downloadUrl: pdfUrl,
+      certificate: serialized,
+      downloadUrl: serialized.pdfUrl,
     });
   } catch (err) {
     console.error("Generate PDF error:", err);
@@ -301,16 +465,38 @@ router.post("/", auth, upload.array("certificate", 10), async (req, res) => {
 
     const createdCerts = [];
     for (const file of req.files) {
-      const result = await uploadBuffer(file.buffer);
+      const ext = path.extname(file.originalname) || ".pdf";
+      const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e6)}${ext}`;
+      const key = `certificates/${uniqueName}`;
+
+      let pdfUrl;
+      let s3Key = null;
+      if (isS3Configured()) {
+        const result = await uploadToS3(
+          file.buffer,
+          key,
+          file.mimetype || "application/pdf"
+        );
+        pdfUrl = result.url;
+        s3Key = result.key;
+      } else {
+        const filePath = path.join(LOCAL_CERTS_DIR, uniqueName);
+        ensureLocalDir(path.dirname(filePath));
+        fs.writeFileSync(filePath, file.buffer);
+        pdfUrl = buildLocalUrl(req, uniqueName);
+      }
+
       const cert = await Certificate.create({
         studentId,
-        certificateUrl: result.secure_url,
-        publicId: result.public_id,
+        pdfUrl,
+        s3Key,
+        certificateUrl: pdfUrl,
       });
       createdCerts.push(cert);
     }
 
-    res.json(createdCerts);
+    const response = await serializeCertificates(createdCerts);
+    res.json(response);
   } catch (err) {
     console.error("Batch upload error:", err);
     res.status(500).json({ message: "Server error", error: err.message });
@@ -319,61 +505,58 @@ router.post("/", auth, upload.array("certificate", 10), async (req, res) => {
 
 /**
  * DELETE /api/certificates/
- * (admin only) Delete ALL certificates from MongoDB and Cloudinary
+ * (admin only) Delete ALL certificates and their stored files
  */
 router.delete("/", auth, async (req, res) => {
   try {
-    // 1. Verify Cloudinary is properly configured
-    if (!cloudinary?.uploader?.destroy) {
-      throw new Error("Cloudinary uploader is not properly configured");
-    }
-
-    // 2. Get all certificates
     const allCertificates = await Certificate.find({});
-
-    // 3. Delete from Cloudinary
-    const deletionResults = {
-      success: [],
-      failures: [],
+    const summary = {
+      s3: { attempted: 0, successful: 0, failed: 0, errors: [] },
+      local: { attempted: 0, successful: 0, failed: 0, errors: [] },
     };
 
     for (const cert of allCertificates) {
-      if (cert.publicId) {
+      if (isS3Configured() && cert.s3Key) {
+        summary.s3.attempted++;
         try {
-          await cloudinary.uploader.destroy(cert.publicId);
-          deletionResults.success.push(cert.publicId);
+          await deleteFromS3(cert.s3Key);
+          summary.s3.successful++;
         } catch (err) {
-          deletionResults.failures.push({
-            publicId: cert.publicId,
-            error: err.message,
-          });
-          console.error(`Failed to delete ${cert.publicId}:`, err);
+          summary.s3.failed++;
+          summary.s3.errors.push({ key: cert.s3Key, error: err.message });
+          console.error(`Failed to delete from S3: ${cert.s3Key}`, err);
+        }
+      }
+
+      const urls = new Set([cert.pdfUrl, cert.certificateUrl].filter(Boolean));
+      for (const url of urls) {
+        const localPath = resolveLocalPathFromUrl(url);
+        if (!localPath) continue;
+
+        summary.local.attempted++;
+        try {
+          if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
+          summary.local.successful++;
+        } catch (err) {
+          summary.local.failed++;
+          summary.local.errors.push({ path: localPath, error: err.message });
+          console.error(`Failed to delete local file: ${localPath}`, err);
         }
       }
     }
 
-    // 4. Delete from MongoDB
     const mongoResult = await Certificate.deleteMany({});
 
     res.json({
       message: "Bulk deletion completed",
-      cloudinary: {
-        attempted: allCertificates.length,
-        successful: deletionResults.success.length,
-        failed: deletionResults.failures.length,
-        errors: deletionResults.failures,
-      },
-      mongoDB: {
-        deletedCount: mongoResult.deletedCount,
-      },
+      storage: summary,
+      mongoDB: { deletedCount: mongoResult.deletedCount },
     });
   } catch (err) {
     console.error("Bulk deletion error:", err);
     res.status(500).json({
       message: "Bulk deletion failed",
       error: err.message,
-      // Only show stack in development
-      stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
     });
   }
 });
@@ -389,7 +572,8 @@ router.get("/search", async (req, res) => {
 
   try {
     const certs = await Certificate.find({ studentId });
-    res.json(certs);
+    const data = await serializeCertificates(certs);
+    res.json(data);
   } catch (err) {
     console.error("Search error:", err);
     res.status(500).json({ message: "Server error" });
@@ -398,16 +582,14 @@ router.get("/search", async (req, res) => {
 
 /**
  * GET    /api/certificates/download/:id
- * (public) Redirect to the Cloudinary URL for download
+ * (public) Redirect to the stored certificate URL
  */
 router.get("/download/:id", async (req, res) => {
   try {
     const cert = await Certificate.findById(req.params.id);
-    console.log("ddd", cert);
     if (!cert)
       return res.status(404).json({ message: "Certificate not found" });
-    // Prefer local pdfUrl if present, otherwise fallback to legacy Cloudinary URL
-    const url = cert.pdfUrl || cert.certificateUrl;
+    const url = await getDownloadUrlForCert(cert);
     if (!url) return res.status(404).json({ message: "No file URL" });
     res.redirect(url);
   } catch (err) {
@@ -426,17 +608,10 @@ router.get("/verify", async (req, res) => {
   try {
     const cert = await Certificate.findOne({ certificateNumber: certificate });
     if (!cert) return res.status(404).json({ message: "Not found" });
+    const serialized = await serializeCertificate(cert);
     return res.json({
       valid: true,
-      certificate: {
-        studentName: cert.studentName,
-        courseName: cert.courseName,
-        trainerName: cert.trainerName,
-        certificateNumber: cert.certificateNumber,
-        pdfUrl: cert.pdfUrl,
-        verificationUrl: cert.verificationUrl,
-        createdAt: cert.createdAt,
-      },
+      certificate: serialized,
     });
   } catch (err) {
     console.error("Verify error:", err);
@@ -456,10 +631,34 @@ router.put("/:id", auth, upload.single("certificate"), async (req, res) => {
 
     // Replace file if new one provided
     if (req.file) {
-      await cloudinary.uploader.destroy(cert.publicId);
-      const result = await uploadBuffer(req.file.buffer);
-      cert.certificateUrl = result.secure_url;
-      cert.publicId = result.public_id;
+      await removeCertificateAssets(cert);
+
+      const ext = path.extname(req.file.originalname) || ".pdf";
+      const baseName = cert.certificateNumber
+        ? `${cert.certificateNumber}${ext}`
+        : `${cert._id}${ext}`;
+      const key = `certificates/${baseName}`;
+
+      let pdfUrl;
+      let s3Key = null;
+      if (isS3Configured()) {
+        const result = await uploadToS3(
+          req.file.buffer,
+          key,
+          req.file.mimetype || "application/pdf"
+        );
+        pdfUrl = result.url;
+        s3Key = result.key;
+      } else {
+        const filePath = path.join(LOCAL_CERTS_DIR, baseName);
+        ensureLocalDir(path.dirname(filePath));
+        fs.writeFileSync(filePath, req.file.buffer);
+        pdfUrl = buildLocalUrl(req, baseName);
+      }
+
+      cert.pdfUrl = pdfUrl;
+      cert.certificateUrl = pdfUrl;
+      cert.s3Key = s3Key;
     }
 
     // Update studentId if provided
@@ -468,7 +667,8 @@ router.put("/:id", auth, upload.single("certificate"), async (req, res) => {
     }
 
     await cert.save();
-    res.json(cert);
+    const serialized = await serializeCertificate(cert);
+    res.json(serialized);
   } catch (err) {
     console.error("Update error:", err);
     res.status(500).json({ message: "Server error", error: err.message });
@@ -486,19 +686,15 @@ router.delete("/:id", auth, async (req, res) => {
       return res.status(404).json({ message: "Certificate not found" });
     }
 
-    // Strict version - fails completely if Cloudinary deletion fails
-    if (cert.publicId) {
-      await cloudinary.uploader.destroy(cert.publicId);
-    }
-
+    await removeCertificateAssets(cert);
     await Certificate.deleteOne({ _id: req.params.id });
 
-    res.json({ message: "Certificate completely deleted from both systems" });
+    res.json({ message: "Certificate completely deleted" });
   } catch (err) {
     console.error("Delete error:", err);
     res.status(500).json({
-      message: "Deletion failed - rolled back",
-      error: "Certificate was not deleted from either system due to an error",
+      message: "Deletion failed",
+      error: err.message,
     });
   }
 });
@@ -521,13 +717,15 @@ router.get("/stats", auth, async (req, res) => {
 router.delete("/student/:studentId", auth, async (req, res) => {
   const { studentId } = req.params;
   try {
-    // 1) Delete all matching certificates
-    const certResult = await Certificate.deleteMany({ studentId });
+    const certificates = await Certificate.find({ studentId });
+    for (const cert of certificates) {
+      await removeCertificateAssets(cert);
+    }
+    const deleteResult = await Certificate.deleteMany({ studentId });
 
-    // 2) Optionally delete the Student document itself
     return res.json({
       message: "تم حذف جميع الشهادات",
-      deletedCertificates: certResult.deletedCount,
+      deletedCertificates: deleteResult.deletedCount,
     });
   } catch (err) {
     console.error("Error deleting student certificates:", err);
@@ -617,37 +815,4 @@ router.get("/trends/monthly", auth, async (req, res) => {
 });
 
 // Add this right before module.exports
-router.get("/cloudinary-test", auth, async (req, res) => {
-  try {
-    // Test configuration
-    if (!cloudinary.config().cloud_name) {
-      return res.status(500).json({ error: "Cloudinary not configured" });
-    }
-
-    // Test actual uploader functionality
-    try {
-      // Try listing some resources (safe operation)
-      const result = await cloudinary.api.resources({ max_results: 1 });
-      return res.json({
-        status: "Cloudinary working properly",
-        config: {
-          cloud_name: cloudinary.config().cloud_name,
-          api_key: cloudinary.config().api_key ? "present" : "missing",
-        },
-        testResult: result,
-      });
-    } catch (apiError) {
-      return res.status(500).json({
-        error: "Cloudinary API test failed",
-        details: apiError.message,
-      });
-    }
-  } catch (err) {
-    return res.status(500).json({
-      error: "Cloudinary test failed",
-      details: err.message,
-    });
-  }
-});
-
 module.exports = router;

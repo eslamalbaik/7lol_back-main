@@ -3,6 +3,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const morgan = require("morgan");
 const cors = require("cors");
+const cookieParser = require("cookie-parser");
 const path = require("path");
 
 const authRoutes = require("./routes/auth");
@@ -16,6 +17,7 @@ const app = express();
 
 app.use(express.json());
 app.use(morgan("dev"));
+app.use(cookieParser());
 
 // CORS configuration for frontend at http://localhost:5173 with credentials support
 app.use(cors({

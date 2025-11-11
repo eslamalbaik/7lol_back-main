@@ -14,6 +14,7 @@ const CertificateSchema = new mongoose2.Schema(
     certificateNumber: { type: String, unique: true, index: true },
     pdfUrl: { type: String },
     verificationUrl: { type: String },
+    s3Key: { type: String },
   },
   { timestamps: true }
 );
