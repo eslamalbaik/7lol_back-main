@@ -1,10 +1,5 @@
-<<<<<<< HEAD
 # Node modules
 node_modules/
 
 # Environment variables
 .env
-=======
-certs
-node_modules
->>>>>>> 12139d3b78a5a5205a32a3197577295d1de03ecd

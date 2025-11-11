@@ -190,11 +190,32 @@ router.post(
       const page = pdfDoc.getPages()[0];
 
       // Load Arabic font
-      const fontPath = fixedTemplate.fontPath;
-      if (!fs.existsSync(fontPath))
+      const fontCandidates = [
+        process.env.ARABIC_FONT_PATH &&
+          path.resolve(process.env.ARABIC_FONT_PATH.trim()),
+        fixedTemplate.fontPath &&
+          path.resolve(
+            fixedTemplate.fontPath.startsWith(".")
+              ? path.join(__dirname, "..", fixedTemplate.fontPath)
+              : fixedTemplate.fontPath
+          ),
+        path.join(__dirname, "..", "server", "fonts", "TraditionalArabic.ttf"),
+      ].filter(Boolean);
+
+      const fontPath =
+        fontCandidates.find((candidate) => {
+          try {
+            return fs.existsSync(candidate);
+          } catch {
+            return false;
+          }
+        }) || null;
+
+      if (!fontPath)
         return res.status(500).json({
           message:
             "لم يتم العثور على الخط العربي. يرجى ضبط ARABIC_FONT_PATH أو وضع TraditionalArabic.ttf",
+          tried: fontCandidates,
         });
 
       const fontBytes = fs.readFileSync(fontPath);
@@ -254,8 +275,19 @@ router.post(
         coords.trainerName.align
       );
 
-      const generatedNumber = (certificateNumberInput && String(certificateNumberInput)) || customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 12)();
-      const formattedDate = issueDateInput || new Date().toLocaleDateString("ar-EG");
+      const generatedNumber =
+        (certificateNumberInput && String(certificateNumberInput)) ||
+        customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 12)();
+
+      const issueDate = issueDateInput ? new Date(issueDateInput) : new Date();
+      const formattedDate =
+        !issueDateInput || !Number.isNaN(issueDate.getTime())
+          ? issueDate.toLocaleDateString("en-GB", {
+              day: "2-digit",
+              month: "2-digit",
+              year: "numeric",
+            })
+          : String(issueDateInput);
       drawRtL(generatedNumber, coords.certificateNumber.x, coords.certificateNumber.y, coords.certificateNumber.size, coords.certificateNumber.align);
       drawRtL(formattedDate, coords.issueDate.x, coords.issueDate.y, coords.issueDate.size, coords.issueDate.align);
 
@@ -263,14 +295,26 @@ router.post(
       const pdfBytes = await pdfDoc.save();
       const buffer = Buffer.from(pdfBytes);
       const fileName = `${generatedNumber}.pdf`;
-      const filePath = path.join(certsDir, fileName);
-      fs.writeFileSync(filePath, pdfBytes);
-      const baseUrl = `${req.protocol}://${req.get("host")}`;
-      const pdfUrl = `${baseUrl}/certificates/${fileName}`;
+      const key = `certificates/${fileName}`;
+
+      let pdfUrl;
+      let s3Key = null;
+      if (isS3Configured()) {
+        const result = await uploadToS3(buffer, key, "application/pdf");
+        pdfUrl = result.url;
+        s3Key = result.key;
+      } else {
+        const certsDir = LOCAL_CERTS_DIR;
+        ensureLocalDir(certsDir);
+        const filePath = path.join(certsDir, fileName);
+        fs.writeFileSync(filePath, buffer);
+        pdfUrl = buildLocalUrl(req, fileName);
+      }
+
       const verificationUrl = `https://desn.pro/verify?certificate=${generatedNumber}`;
 
       // Persist certificate so it appears in GET /api/certificates
-      await Certificate.create({
+      const savedCert = await Certificate.create({
         studentName: traineeName,
         courseName,
         trainerName,
