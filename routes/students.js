@@ -1,7 +1,8 @@
-const express = require("express");
+import express from "express";
+import Student from "../models/Student.js";
+import auth from "../middlewares/auth.js";
+
 const router = express.Router();
-const Student = require("../models/Student");
-const auth = require("../middlewares/auth");
 
 // Create new student
 router.post("/", auth, async (req, res) => {
@@ -45,4 +46,4 @@ router.delete("/:id", auth, async (req, res) => {
   res.json({ message: "Deleted" });
 });
 
-module.exports = router;
+export default router;

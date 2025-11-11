@@ -1,17 +1,23 @@
-require("dotenv").config();
-const express = require("express");
-const mongoose = require("mongoose");
-const morgan = require("morgan");
-const cors = require("cors");
-const cookieParser = require("cookie-parser");
-const path = require("path");
+import dotenv from "dotenv";
+import express from "express";
+import mongoose from "mongoose";
+import morgan from "morgan";
+import cors from "cors";
+import cookieParser from "cookie-parser";
+import path from "path";
+import { fileURLToPath } from "url";
 
-const authRoutes = require("./routes/auth");
-const certRoutes = require("./routes/certificates");
-const studentRoutes = require("./routes/students");
-const createAdmin = require("./utils/createAdmin");
-const swaggerUi = require("swagger-ui-express");
-const swaggerJsdoc = require("swagger-jsdoc");
+import authRoutes from "./routes/auth.js";
+import certRoutes from "./routes/certificates.js";
+import studentRoutes from "./routes/students.js";
+import createAdmin from "./utils/createAdmin.js";
+import swaggerUi from "swagger-ui-express";
+import swaggerJsdoc from "swagger-jsdoc";
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 

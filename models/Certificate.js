@@ -1,6 +1,6 @@
-const mongoose2 = require("mongoose");
+import mongoose from "mongoose";
 
-const CertificateSchema = new mongoose2.Schema(
+const CertificateSchema = new mongoose.Schema(
   {
     // Legacy fields (for Cloudinary-based flows)
     studentId: { type: String, index: true },
@@ -19,4 +19,6 @@ const CertificateSchema = new mongoose2.Schema(
   { timestamps: true }
 );
 
-module.exports = mongoose2.model("Certificate", CertificateSchema);
+const Certificate = mongoose.model("Certificate", CertificateSchema);
+
+export default Certificate;

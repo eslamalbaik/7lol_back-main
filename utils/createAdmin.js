@@ -1,5 +1,6 @@
-const Admin = require("../models/Admin");
-const bcrypt = require("bcrypt");
+import bcrypt from "bcrypt";
+import Admin from "../models/Admin.js";
+
 async function createAdmin() {
   const { ADMIN_USERNAME, ADMIN_PASSWORD } = process.env;
   if (!ADMIN_USERNAME || !ADMIN_PASSWORD) return;
@@ -9,4 +10,4 @@ async function createAdmin() {
   await Admin.create({ username: ADMIN_USERNAME, password: hashed });
   console.log("🔒 Default admin account created");
 }
-module.exports = createAdmin;
+export default createAdmin;

@@ -1,10 +1,11 @@
 // routes/auth.js
-const express = require("express");
+import express from "express";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import Admin from "../models/Admin.js";
+import auth from "../middlewares/auth.js";
+
 const router = express.Router();
-const Admin = require("../models/Admin");
-const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
-const auth = require("../middlewares/auth");
 
 // POST /api/auth/login
 router.post("/login", async (req, res) => {
@@ -81,4 +82,4 @@ router.post("/change-password", auth, async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

@@ -1,26 +1,32 @@
-const express = require("express");
-const router = express.Router();
-const Certificate = require("../models/Certificate");
-const multer = require("multer");
-const auth = require("../middlewares/auth");
-const fs = require("fs");
-const path = require("path");
-const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
-const fontkit = require("@pdf-lib/fontkit");
-const { customAlphabet } = require("nanoid");
-const { shapeArabic } = require("../utils/arabicText");
-const fixedTemplate = require("../utils/fixedTemplate");
-const { validationResult, body } = require("express-validator");
-const {
+import express from "express";
+import multer from "multer";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
+import { customAlphabet } from "nanoid";
+import { validationResult, body } from "express-validator";
+import Certificate from "../models/Certificate.js";
+import auth from "../middlewares/auth.js";
+import { shapeArabic } from "../utils/arabicText.js";
+import fixedTemplate from "../utils/fixedTemplate.js";
+import {
   uploadToS3,
   deleteFromS3,
   isS3Configured,
   getPresignedUrl,
-} = require("../utils/s3Upload");
+} from "../utils/s3Upload.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const router = express.Router();
+
 // Make pdfjs optional for environments where it isn't available
 let pdfjsLib = null;
 try {
-  pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
+  pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.js");
 } catch (e) {
   // optional dependency not found; analysis will skip text extraction
   pdfjsLib = null;
@@ -45,7 +51,10 @@ async function serializeCertificate(cert) {
   if (!cert) return null;
   const data =
     typeof cert.toObject === "function" ? cert.toObject() : { ...cert };
-  data.pdfUrl = await getDownloadUrlForCert(cert);
+  const downloadUrl = await getDownloadUrlForCert(cert);
+  data.pdfUrl = downloadUrl;
+  data.certificateUrl = downloadUrl;
+  data.downloadUrl = downloadUrl;
   return data;
 }
 
@@ -330,6 +339,8 @@ router.post(
       return res.status(201).json({
         message: "تم إنشاء الشهادة بنجاح",
         pdfUrl: downloadUrl,
+        certificateUrl: downloadUrl,
+        downloadUrl,
         certificateNumber: generatedNumber,
         issueDate: formattedDate,
         verificationUrl,
@@ -833,5 +844,4 @@ router.get("/trends/monthly", auth, async (req, res) => {
   }
 });
 
-// Add this right before module.exports
-module.exports = router;
+export default router;

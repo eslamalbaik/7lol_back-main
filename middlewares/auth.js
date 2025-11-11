@@ -1,5 +1,6 @@
-const jwt = require("jsonwebtoken");
-module.exports = function (req, res, next) {
+import jwt from "jsonwebtoken";
+
+const auth = (req, res, next) => {
   const header = req.header("Authorization");
   let token = null;
 
@@ -35,3 +36,5 @@ module.exports = function (req, res, next) {
     res.status(401).json({ message: "رمز الوصول غير صالح" });
   }
 };
+
+export default auth;

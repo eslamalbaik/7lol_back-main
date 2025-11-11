@@ -1,10 +1,13 @@
-const {
+import dotenv from "dotenv";
+import {
   S3Client,
   PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
-} = require("@aws-sdk/client-s3");
-const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+dotenv.config();
 
 const region = process.env.AWS_REGION || "us-east-1";
 const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
@@ -89,10 +92,5 @@ async function getPresignedUrl(keyOrUrl, expiresIn = 3600) {
   return getSignedUrl(s3Client, command, { expiresIn });
 }
 
-module.exports = {
-  isS3Configured,
-  uploadToS3,
-  deleteFromS3,
-  getPresignedUrl,
-};
+export { isS3Configured, uploadToS3, deleteFromS3, getPresignedUrl };
 
