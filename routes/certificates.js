@@ -254,48 +254,23 @@ router.post(
         coords.trainerName.align
       );
 
-      const generatedNumber =
-        certificateNumberInput ||
-        customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 12)();
-      const formattedDate =
-        issueDateInput || new Date().toLocaleDateString("en-GB");
-      drawRtL(
-        generatedNumber,
-        coords.certificateNumber.x,
-        coords.certificateNumber.y,
-        coords.certificateNumber.size,
-        coords.certificateNumber.align
-      );
-      drawRtL(
-        formattedDate,
-        coords.issueDate.x,
-        coords.issueDate.y,
-        coords.issueDate.size,
-        coords.issueDate.align
-      );
+      const generatedNumber = (certificateNumberInput && String(certificateNumberInput)) || customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 12)();
+      const formattedDate = issueDateInput || new Date().toLocaleDateString("ar-EG");
+      drawRtL(generatedNumber, coords.certificateNumber.x, coords.certificateNumber.y, coords.certificateNumber.size, coords.certificateNumber.align);
+      drawRtL(formattedDate, coords.issueDate.x, coords.issueDate.y, coords.issueDate.size, coords.issueDate.align);
 
+      // Save PDF
       const pdfBytes = await pdfDoc.save();
       const buffer = Buffer.from(pdfBytes);
       const fileName = `${generatedNumber}.pdf`;
-      const key = `certificates/${fileName}`;
-
-      let pdfUrl;
-      let s3Key = null;
-      if (isS3Configured()) {
-        const result = await uploadToS3(buffer, key, "application/pdf");
-        pdfUrl = result.url;
-        s3Key = result.key;
-      } else {
-        const filePath = path.join(LOCAL_CERTS_DIR, fileName);
-        ensureLocalDir(path.dirname(filePath));
-        fs.writeFileSync(filePath, buffer);
-        pdfUrl = buildLocalUrl(req, fileName);
-      }
-
+      const filePath = path.join(certsDir, fileName);
+      fs.writeFileSync(filePath, pdfBytes);
+      const baseUrl = `${req.protocol}://${req.get("host")}`;
+      const pdfUrl = `${baseUrl}/certificates/${fileName}`;
       const verificationUrl = `https://desn.pro/verify?certificate=${generatedNumber}`;
 
-      // Save record in DB
-      const savedCert = await Certificate.create({
+      // Persist certificate so it appears in GET /api/certificates
+      await Certificate.create({
         studentName: traineeName,
         courseName,
         trainerName,
