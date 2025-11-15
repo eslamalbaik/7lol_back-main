@@ -21,6 +21,13 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL
+  ? process.env.PUBLIC_BASE_URL.replace(/\/$/, "")
+  : null;
+const VERIFY_BASE_URL = process.env.VERIFY_BASE_URL
+  ? process.env.VERIFY_BASE_URL.replace(/\/$/, "")
+  : PUBLIC_BASE_URL || "https://verifydespro.online";
+
 const router = express.Router();
 
 // Make pdfjs optional for environments where it isn't available
@@ -69,7 +76,9 @@ function ensureLocalDir(targetPath = LOCAL_CERTS_DIR) {
 }
 
 function buildLocalUrl(req, fileName) {
-  return `${req.protocol}://${req.get("host")}/certificates/${fileName}`;
+  const base =
+    PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
+  return `${base.replace(/\/$/, "")}/certificates/${fileName}`;
 }
 
 function resolveLocalPathFromUrl(url) {
@@ -297,8 +306,18 @@ router.post(
               year: "numeric",
             })
           : String(issueDateInput);
+      const verificationUrl = `${VERIFY_BASE_URL}?certificate=${generatedNumber}`;
       drawRtL(generatedNumber, coords.certificateNumber.x, coords.certificateNumber.y, coords.certificateNumber.size, coords.certificateNumber.align);
       drawRtL(formattedDate, coords.issueDate.x, coords.issueDate.y, coords.issueDate.size, coords.issueDate.align);
+      if (coords.verificationUrl) {
+        drawRtL(
+          verificationUrl,
+          coords.verificationUrl.x,
+          coords.verificationUrl.y,
+          coords.verificationUrl.size,
+          coords.verificationUrl.align
+        );
+      }
 
       // Save PDF
       const pdfBytes = await pdfDoc.save();
@@ -319,8 +338,6 @@ router.post(
         fs.writeFileSync(filePath, buffer);
         pdfUrl = buildLocalUrl(req, fileName);
       }
-
-      const verificationUrl = `https://desn.pro/verify?certificate=${generatedNumber}`;
 
       // Persist certificate so it appears in GET /api/certificates
       const savedCert = await Certificate.create({
@@ -404,7 +421,7 @@ router.post("/generate", auth, async (req, res) => {
     // Generate certificate number
     const nanoid = customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 12);
     const certificateNumber = nanoid();
-    const verificationUrl = `https://desn.pro/verify?certificate=${certificateNumber}`;
+    const verificationUrl = `${VERIFY_BASE_URL}?certificate=${certificateNumber}`;
 
     // Coordinates (adjust as needed for your template)
     const drawText = (text, x, y, size = 18) => {

@@ -23,6 +23,7 @@ const fixedTemplate = {
     trainerName: { x: 1020, y: 360, size: 30, align: "center" },
     certificateNumber: { x: 1030, y: 180, size: 30, align: "center" },
     issueDate: { x: 1610, y: 183, size: 30, align: "center" },
+    verificationUrl: { x: 530, y: 180, size: 24, align: "center" },
   },
 };
 
