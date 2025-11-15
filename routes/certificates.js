@@ -23,10 +23,10 @@ const __dirname = path.dirname(__filename);
 
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL
   ? process.env.PUBLIC_BASE_URL.replace(/\/$/, "")
-  : null;
+  : "https://verifydespro.online";
 const VERIFY_BASE_URL = process.env.VERIFY_BASE_URL
   ? process.env.VERIFY_BASE_URL.replace(/\/$/, "")
-  : PUBLIC_BASE_URL || "https://verifydespro.online";
+  : PUBLIC_BASE_URL;
 
 const router = express.Router();
 
@@ -306,12 +306,15 @@ router.post(
               year: "numeric",
             })
           : String(issueDateInput);
+      // Static verification URL for display in certificate (without query params)
+      const staticVerificationUrl = `${PUBLIC_BASE_URL}/`;
+      // Dynamic verification URL for API response (with certificate number)
       const verificationUrl = `${VERIFY_BASE_URL}?certificate=${generatedNumber}`;
       drawRtL(generatedNumber, coords.certificateNumber.x, coords.certificateNumber.y, coords.certificateNumber.size, coords.certificateNumber.align);
       drawRtL(formattedDate, coords.issueDate.x, coords.issueDate.y, coords.issueDate.size, coords.issueDate.align);
       if (coords.verificationUrl) {
         drawRtL(
-          verificationUrl,
+          staticVerificationUrl,
           coords.verificationUrl.x,
           coords.verificationUrl.y,
           coords.verificationUrl.size,
